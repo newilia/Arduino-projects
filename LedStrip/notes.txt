@@ -1,0 +1,7 @@
+
+
+template<typename T>
+T enInc(T & val) 
+{
+  return T((int)val + 1);
+}
