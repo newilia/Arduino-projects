@@ -3,7 +3,7 @@ if(screen.width > 600) handlerPC();
 
 var inputRange = document.getElementsByTagName('input')[0];
 
-var Socket = new WebSocket('ws://' + window.location.hostname + ':81/');	
+var socket = new WebSocket('ws://' + window.location.hostname + ':81/');
 
 try{
 	document.createEvent('touchevent'); //проверка на сенсор
@@ -42,7 +42,7 @@ function handlerMobile(){
 
 			var send = 'F_' + this.getAttribute('name');
 		    console.log(send);
-		    Socket.send(send);
+		    socket.send(send);
 
 		}
 	}
@@ -143,7 +143,7 @@ function handlerPC(){
 
 			var send = 'F_' + this.getAttribute('name');
 		    console.log(send);
-		    Socket.send(send);
+		    socket.send(send);
 
 		}
 	}
@@ -164,7 +164,7 @@ function posRangeValue(){
 
 		var send = 'B_' + this.value;
 	    console.log(send);
-	    Socket.send(send);
+	    socket.send(send);
 
 	}	
 }

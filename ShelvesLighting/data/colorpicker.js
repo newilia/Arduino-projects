@@ -7,7 +7,7 @@ colorPicker.getSvFigCursor().radius += 10; // ширина малого коль
 colorPicker.getWheelCursor().height += 5; // размер ползунка
 colorPicker.resize(340); // общий размер кольца
 
-var Socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+var socket = new WebSocket('ws://' + window.location.hostname + ':81/');
 
 var is_active = false; // флаг нажатия
 
@@ -34,7 +34,7 @@ function clickup(){
 	var send = colorPicker.getCurColorHex();
 
 	console.log(send);
-	Socket.send(send);
+	socket.send(send);
 }
 
 var lastSend = 0;
@@ -49,6 +49,6 @@ function clickmove(){
   		lastSend = now;
 
 		console.log(send);
-		Socket.send(send);
+		socket.send(send);
 	}
 }
