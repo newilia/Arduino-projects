@@ -1,276 +1,218 @@
 /*
-  WS2812FX Webinterface.
-  
-  Harm Aldick - 2016
-  www.aldick.org
-
-  
-  FEATURES
-    * Webinterface with mode, color, speed and brightness selectors
-
-
-  LICENSE
-
-  The MIT License (MIT)
-
-  Copyright (c) 2016  Harm Aldick 
-
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
-  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  copies of the Software, and to permit persons to whom the Software is
-  furnished to do so, subject to the following conditions:
-
-  The above copyright notice and this permission notice shall be included in
-  all copies or substantial portions of the Software.
-
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-  THE SOFTWARE.
-
-  
-  CHANGELOG
-  2016-11-26 initial version
-  2018-01-06 added custom effects list option and auto-cycle feature
-  
+  Скетч разработан 30.11.2018 Wirekraken
 */
-#ifdef ARDUINO_ARCH_ESP32
-  #include <WiFi.h>
-  #include <WebServer.h>
-  #define WEB_SERVER WebServer
-  #define ESP_RESET ESP.restart()
-#else
-  #include <ESP8266WiFi.h>
-  #include <ESP8266WebServer.h>
-  #define WEB_SERVER ESP8266WebServer
-  #define ESP_RESET ESP.reset()
-#endif
+#include <ESP8266WebServer.h>
+#include <WebSocketsServer.h>
+#include <FS.h>
+#include <FastLED.h>
+#define DEBUG 0
+const char* ssid = "138"; // имя вашей сети
+const char* password = "88888888"; // пароль вашей сети
 
-#include <WS2812FX.h>
+IPAddress Ip(192,168,0,123); // IP-адрес для ESP
+IPAddress Gateway(192,168,0,1); // IP-адрес шлюза (роутера)
+IPAddress Subnet(255,255,255,0); // маска подсети, диапазон IP-адресов в локальной сети
+ 
+#define LED_COUNT 72 // число пикселей в ленте
+#define LED_DT 2    // пин, куда подключен DIN ленты (номера пинов ESP8266 совпадает с Arduino)  
 
-extern const char index_html[];
-extern const char main_js[];
+uint8_t bright = 25; // яркость (0 - 255)
+uint8_t ledMode = 0; // эффект (0 - 29)
 
-#define WIFI_SSID "138"
-#define WIFI_PASSWORD "88888888"
+uint8_t flag = 1; // флаг отмены эффекта
 
-#define STATIC_IP                       // uncomment for static IP, set IP below
-#ifdef STATIC_IP
-  IPAddress ip(192,168,0,123);
-  IPAddress gateway(192,168,0,1);
-  IPAddress subnet(255,255,255,0);
-#endif
+CRGBArray<LED_COUNT> leds;
 
-// QUICKFIX...See https://github.com/esp8266/Arduino/issues/263
-#define min(a,b) ((a)<(b)?(a):(b))
-#define max(a,b) ((a)>(b)?(a):(b))
+uint8_t delayValue = 20; // задержка
+uint8_t stepValue = 10; // шаг по пикселям
+uint8_t hueValue = 0; // тон цвета
 
-#define LED_PIN 2                       // 0 = GPIO0, 2=GPIO2
-#define LED_COUNT 72
+// инициализация websocket на 81 порту
+WebSocketsServer webSocket(81);
+ESP8266WebServer server(80);
 
-#define WIFI_TIMEOUT 30000              // checks WiFi every ...ms. Reset after this time, if WiFi cannot reconnect.
-#define HTTP_PORT 80
-
-unsigned long auto_last_change = 0;
-unsigned long last_wifi_check_time = 0;
-String modes = "";
-uint8_t myModes[] = {}; // *** optionally create a custom list of effect/mode numbers
-bool auto_cycle = false;
-
-WS2812FX ws2812fx = WS2812FX(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-WEB_SERVER server(HTTP_PORT);
+#include "led_effects.h"
 
 void setup(){
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n\nStarting...");
+  Serial.begin(9600); 
+  LEDS.setBrightness(bright);
 
-  modes.reserve(5000);
-  modes_setup();
+  LEDS.addLeds<WS2811, LED_DT, GRB>(leds, LED_COUNT);  // настройки для вашей ленты (ленты на WS2811, WS2812, WS2812B)
+  updateColor(0,0,0);
+  LEDS.show(); 
 
-  Serial.println("WS2812FX setup");
-  ws2812fx.init();
-  ws2812fx.setMode(FX_MODE_STATIC);
-  ws2812fx.setColor(0xFF5900);
-  ws2812fx.setSpeed(1000);
-  ws2812fx.setBrightness(255);
-  ws2812fx.start();
+  WiFi.config(Ip, Gateway, Subnet);
+  WiFi.begin(ssid, password);
+  Serial.println("");
 
-  Serial.println("Wifi setup");
-  wifi_setup();
- 
-  Serial.println("HTTP server setup");
-  server.on("/", srv_handle_index_html);
-  server.on("/main.js", srv_handle_main_js);
-  server.on("/modes", srv_handle_modes);
-  server.on("/set", srv_handle_set);
-  server.onNotFound(srv_handle_not_found);
-  server.begin();
-  Serial.println("HTTP server started.");
-
-  Serial.println("ready!");
-}
-
-
-void loop() {
-  unsigned long now = millis();
-
-  server.handleClient();
-  ws2812fx.service();
-
-  if(now - last_wifi_check_time > WIFI_TIMEOUT) {
-    Serial.print("Checking WiFi... ");
-    if(WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi connection lost. Reconnecting...");
-      wifi_setup();
-    } else {
-      Serial.println("OK");
-    }
-    last_wifi_check_time = now;
-  }
-
-  if(auto_cycle && (now - auto_last_change > 10000)) { // cycle effect mode every 10 seconds
-    uint8_t next_mode = (ws2812fx.getMode() + 1) % ws2812fx.getModeCount();
-    if(sizeof(myModes) > 0) { // if custom list of modes exists
-      for(uint8_t i=0; i < sizeof(myModes); i++) {
-        if(myModes[i] == ws2812fx.getMode()) {
-          next_mode = ((i + 1) < sizeof(myModes)) ? myModes[i + 1] : myModes[0];
-          break;
-        }
-      }
-    }
-    ws2812fx.setMode(next_mode);
-    Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
-    auto_last_change = now;
-  }
-}
-
-
-
-/*
- * Connect to WiFi. If no connection is made within WIFI_TIMEOUT, ESP gets resettet.
- */
-void wifi_setup() {
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.mode(WIFI_STA);
-  #ifdef STATIC_IP  
-    WiFi.config(ip, gateway, subnet);
-  #endif
-
-  unsigned long connect_start = millis();
-  while(WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED){ 
     delay(500);
     Serial.print(".");
-
-    if(millis() - connect_start > WIFI_TIMEOUT) {
-      Serial.println();
-      Serial.print("Tried ");
-      Serial.print(WIFI_TIMEOUT);
-      Serial.print("ms. Resetting ESP now.");
-      ESP_RESET;
-    }
   }
-
-  Serial.println("");
-  Serial.println("WiFi connected");  
+  
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
-  Serial.println();
+
+  server.onNotFound([](){
+    if(!handleFileRead(server.uri()))
+      server.send(404, "text/plain", String("FileNotFound"));
+  });
+  
+  server.begin();
+
+  SPIFFS.begin();
+  
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
 }
 
+void loop(){
+  //обработка входящих запросов HTTP или WebSockets
+  webSocket.loop();
+  server.handleClient();
 
-/*
- * Build <li> string for all modes.
- */
-void modes_setup() {
-  modes = "";
-  uint8_t num_modes = sizeof(myModes) > 0 ? sizeof(myModes) : ws2812fx.getModeCount();
-  for(uint8_t i=0; i < num_modes; i++) {
-    uint8_t m = sizeof(myModes) > 0 ? myModes[i] : i;
-    modes += "<li><a href='#'>";
-    modes += ws2812fx.getModeName(m);
-    modes += "</a></li>";
+  ledEffect(ledMode);
+
+}
+
+//функция обработки входящих сообщений
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length){
+  
+   if(type == WStype_CONNECTED){
+      IPAddress ip = webSocket.remoteIP(num);
+
+      String message = String("Connected");
+      webSocket.broadcastTXT(message);   // отправляем последнее значение всем клиентам при подключении    
+    }
+    
+    if(type == WStype_TEXT){
+        String data;
+        for(int x = 0; x < length; x++){
+          if(!isdigit(payload[x])) continue;
+          data += (char) payload[x];
+          
+        }
+        
+        if(payload[0] == 'B'){
+          flag = 0;
+          Serial.print("Bright: ");
+          bright = data.toInt();
+          Serial.println(data);
+          LEDS.setBrightness(bright);
+
+        }  
+        else if(payload[0] == 'F'){
+          flag = 0;
+          Serial.print("Function: ");
+          ledMode = data.toInt();
+          Serial.println(data);
+          ledEffect(ledMode);
+
+        }
+        else if(payload[0] == '#'){
+  
+          if(!flag){
+              Serial.print("flag : ");
+              Serial.println(flag);
+              ledMode = flag;
+              ledEffect(ledMode);
+              flag = 1;
+
+          }
+          else{
+           //преобразуем в 24 битное цветовое число
+           uint32_t rgb = (uint32_t) strtol((const char *) &payload[1], NULL, 16);
+          
+           //преобразуем 24 бит по 8 бит на канал 
+           uint8_t r = abs((int)(0 + (rgb >> 16) & 0xFF));
+           uint8_t g = abs((int)(0 + (rgb >>  8) & 0xFF));
+           uint8_t b = abs((int)(0 + (rgb >>  0) & 0xFF));
+           
+           Serial.print("ColorPicker: ");
+           Serial.print(r);
+           Serial.print(g);
+           Serial.println(b);
+           
+           for(int x = 0; x < LED_COUNT; x++){
+             leds[x].setRGB(r,g,b);
+           }
+           LEDS.show();
+            
+          }
+       }
+   } 
+}
+
+// функция эффектов
+void ledEffect(int ledMode){ 
+    switch(ledMode){
+      case 0: updateColor(0,0,0); break;
+      case 1: rainbow_fade(); delayValue = 20; break;       
+      case 2: rainbow_loop(); delayValue = 20; break;
+      case 3: new_rainbow_loop(); delayValue = 5; break;
+      case 4: random_march(); delayValue = 40; break;  
+      case 5: rgb_propeller(); delayValue = 25; break;
+      case 6: rotatingRedBlue(); delayValue = 40; hueValue = 0; break;
+      case 7: Fire(55, 120, delayValue); delayValue = 15; break; 
+      case 8: blueFire(55, 250, delayValue); delayValue = 15; break;  
+      case 9: random_burst(); delayValue = 20; break;
+      case 10: flicker(); delayValue = 20; break;
+      case 11: random_color_pop(); delayValue = 35; break;                                      
+      case 12: Sparkle(255, 255, 255, delayValue); delayValue = 0; break;                   
+      case 13: color_bounce(); delayValue = 20; hueValue = 0; break;
+      case 14: color_bounceFADE(); delayValue = 40; hueValue = 0; break;
+      case 15: red_blue_bounce(); delayValue = 40; hueValue = 0; break;
+      case 16: rainbow_vertical(); delayValue = 50; stepValue = 15; break;
+      case 17: matrix(); delayValue = 50; hueValue = 95; break; 
+  
+      // тяжелые эффекты
+      case 18: rwb_march(); delayValue = 80; break;                         
+      case 19: flame(); break;
+      case 20: theaterChase(255, 0, 0, delayValue); delayValue = 50; break;
+      case 21: Strobe(255, 255, 255, 10, delayValue, 1000); delayValue = 100; break;
+      case 22: policeBlinker(); delayValue = 25; break;
+      case 23: kitt(); delayValue = 100; break;
+      case 24: rule30(); delayValue = 100; break;
+      case 25: fade_vertical(); delayValue = 60; hueValue = 180; break;
+      case 26: fadeToCenter(); break;
+      case 27: runnerChameleon(); break;
+      case 28: blende(); break;
+      case 29: blende_2();
+
+    }
+}
+  
+// функция получения типа файла
+String getContentType(String filename){
+    if(server.hasArg("download")) return "application/octet-stream";
+    else if(filename.endsWith(".htm")) return "text/html";
+    else if(filename.endsWith(".html")) return "text/html";
+    else if(filename.endsWith(".css")) return "text/css";
+    else if(filename.endsWith(".js")) return "application/javascript";
+    else if(filename.endsWith(".png")) return "image/png";
+    else if(filename.endsWith(".gif")) return "image/gif";
+    else if(filename.endsWith(".jpg")) return "image/jpeg";
+    else if(filename.endsWith(".ico")) return "image/x-icon";
+    else if(filename.endsWith(".xml")) return "text/xml";
+    else if(filename.endsWith(".pdf")) return "application/x-pdf";
+    else if(filename.endsWith(".zip")) return "application/x-zip";
+    else if(filename.endsWith(".gz")) return "application/x-gzip";
+    return "text/plain";
+
+}
+
+// функция поиска файла в файловой системе
+bool handleFileRead(String path){
+  #ifdef DEBUG
+    Serial.println("handleFileRead: " + path);
+  #endif
+  if(path.endsWith("/")) path += "index.html";
+  if(SPIFFS.exists(path)){
+    File file = SPIFFS.open(path, "r");
+    size_t sent = server.streamFile(file, getContentType(path));
+    file.close();
+    return true;
   }
-}
-
-/* #####################################################
-#  Webserver Functions
-##################################################### */
-
-void srv_handle_not_found() {
-  server.send(404, "text/plain", "File Not Found");
-}
-
-void srv_handle_index_html() {
-  server.send_P(200,"text/html", index_html);
-}
-
-void srv_handle_main_js() {
-  server.send_P(200,"application/javascript", main_js);
-}
-
-void srv_handle_modes() {
-  server.send(200,"text/plain", modes);
-}
-
-void srv_handle_set() {
-  for (uint8_t i=0; i < server.args(); i++){
-    if(server.argName(i) == "c") {
-      uint32_t tmp = (uint32_t) strtol(server.arg(i).c_str(), NULL, 10);
-      if(tmp <= 0xFFFFFF) {
-        ws2812fx.setColor(tmp);
-      }
-    }
-
-    if(server.argName(i) == "m") {
-      uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
-      uint8_t new_mode = sizeof(myModes) > 0 ? myModes[tmp % sizeof(myModes)] : tmp % ws2812fx.getModeCount();
-      ws2812fx.setMode(new_mode);
-      auto_cycle = false;
-      Serial.print("mode is "); Serial.println(ws2812fx.getModeName(ws2812fx.getMode()));
-    }
-
-    if(server.argName(i) == "b") {
-      if(server.arg(i)[0] == '-') {
-        ws2812fx.setBrightness(ws2812fx.getBrightness() * 0.8);
-      } else if(server.arg(i)[0] == ' ') {
-        ws2812fx.setBrightness(min(max(ws2812fx.getBrightness(), 5) * 1.2, 255));
-      } else { // set brightness directly
-        uint8_t tmp = (uint8_t) strtol(server.arg(i).c_str(), NULL, 10);
-        ws2812fx.setBrightness(tmp);
-      }
-      Serial.print("brightness is "); Serial.println(ws2812fx.getBrightness());
-    }
-
-    if(server.argName(i) == "s") {
-      if(server.arg(i)[0] == '-') {
-        ws2812fx.setSpeed(max(ws2812fx.getSpeed(), 5) * 1.2);
-      } else if(server.arg(i)[0] == ' ') {
-        ws2812fx.setSpeed(ws2812fx.getSpeed() * 0.8);
-      } else {
-        uint16_t tmp = (uint16_t) strtol(server.arg(i).c_str(), NULL, 10);
-        ws2812fx.setSpeed(tmp);
-      }
-      Serial.print("speed is "); Serial.println(ws2812fx.getSpeed());
-    }
-
-    if(server.argName(i) == "a") {
-      if(server.arg(i)[0] == '-') {
-        auto_cycle = false;
-      } else {
-        auto_cycle = true;
-        auto_last_change = 0;
-      }
-    }
-  }
-  server.send(200, "text/plain", "OK");
+  return false;
+  
 }
