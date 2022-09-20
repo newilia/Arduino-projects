@@ -1,5 +1,7 @@
-#pragma once
+
 #include <FastLED.h>
+#include <GyverPortal.h>
 #include "globalDefs.h"
 
-extern CRGBArray<LEDS_COUNT> g_leds;
+extern Leds g_leds;
+extern GyverPortal g_portal;

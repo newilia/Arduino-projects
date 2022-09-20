@@ -3,7 +3,7 @@
 #include <ESP8266WebServer.h>
 #include <FS.h>
 
-
+/*
 //функция обработки входящих сообщений
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length)
 {
@@ -100,4 +100,4 @@ bool handleFileRead(ESP8266WebServer & server, String path)
 		return true;
 	}
 	return false;
-}
+}*/
